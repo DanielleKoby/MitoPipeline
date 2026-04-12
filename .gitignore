@@ -1,0 +1,13 @@
+# Data and Large Files
+data/
+reference/
+taxonomy/
+
+# Outputs
+results/
+plots/
+
+# Environment and Tools
+tools/
+__pycache__/
+.nfs*
