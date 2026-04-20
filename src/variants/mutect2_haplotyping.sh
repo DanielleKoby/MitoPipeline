@@ -18,11 +18,38 @@ MITO_SEQ_LEN=16728
 ROTATION_STRAT=$MITO_READ_LEN
 ROTATION_END=$((MITO_SEQ_LEN - MITO_READ_LEN))
 
+# Atomic version detection for parallel Slurm tasks (all tasks in one job use same version)
+get_version_atomic() {
+    local base_dir="$1"
+    local lock_file="${base_dir}/.version_lock"
+    local version_cache="${base_dir}/.version_cache"
+    (
+        flock -x 200 || { echo "ERROR: Cannot acquire lock"; exit 1; }
+        if [ -f "$version_cache" ]; then
+            cat "$version_cache"
+        else
+            local max_v=0
+            [ -d "$base_dir" ] && for d in "${base_dir}/v_"*; do
+                [ -d "$d" ] || continue
+                v=$(basename "$d" | sed "s/v_//")
+                [[ "$v" =~ ^[0-9]+$ ]] && (( v > max_v )) && max_v=$v
+            done
+            next_v=$((max_v + 1))
+            printf "%02d" "$next_v" | tee "$version_cache"
+        fi
+    ) 200>"$lock_file"
+}
+FILTERED_VERSION=$(get_version_atomic "${PROJECT_ROOT}/data/processed/variants")
+CONSENSUS_VERSION=$(get_version_atomic "${PROJECT_ROOT}/data/processed/consensus")
+(( 10#$FILTERED_VERSION > 10#$CONSENSUS_VERSION )) && CONSENSUS_VERSION=$FILTERED_VERSION || FILTERED_VERSION=$CONSENSUS_VERSION
+
 # Output files
 RAW_DIR="${PROJECT_ROOT}/data/processed/variants/raw"
-FILTERED_DIR="${PROJECT_ROOT}/data/processed/variants/filtered_01"
-FINAL_DIR="${PROJECT_ROOT}/data/processed/variants/final_01"
-CONSENSUS_DIR="${PROJECT_ROOT}/data/processed/consensus/fasta_01"
+VARIANTS_VERSION_DIR="${PROJECT_ROOT}/data/processed/variants/v_${FILTERED_VERSION}"
+FILTERED_DIR="${VARIANTS_VERSION_DIR}/filtered"
+FINAL_DIR="${VARIANTS_VERSION_DIR}/final"
+CONSENSUS_VERSION_DIR="${PROJECT_ROOT}/data/processed/consensus/v_${CONSENSUS_VERSION}"
+CONSENSUS_DIR="${CONSENSUS_VERSION_DIR}/fasta"
 
 RAW_VCF="${RAW_DIR}/${SAMPLE_ID}.raw_mito_calls.vcf.gz"
 FILTERED_VCF="${FILTERED_DIR}/${SAMPLE_ID}.vcf.gz"
@@ -89,34 +116,22 @@ conda activate danielle
 # ' | bgzip -c > "$FINAL_VCF"
 
 # Step 3- Apply custom AF and position filters
+# Updated April 20th - include edges of the mito genome
 bcftools view -r CM022001.1 "$FILTERED_VCF" |
 awk -F '\t' '
 /^#/ { print; next }
 {
-    # Split the FORMAT column (e.g., GT:AD:AF:DP:...)
     n = split($9, h, ":")
-    afi = 0; dpi = 0
-    
-    # Find which position holds the AF and the DP
-    for(i=1;i<=n;i++){
-        if(h[i]=="AF"){ afi = i }
-        if(h[i]=="DP"){ dpi = i }
+    afi = dpi = 0
+    for(i=1;i<=n;i++) {
+        if(h[i]=="AF") afi = i
+        if(h[i]=="DP") dpi = i
     }
-    
-    # If it is missing AF or DP, skip the line
-    if(afi==0 || dpi==0) next 
-    
-    # Split the actual data column for the dog
+    if(afi==0 || dpi==0) next
     split($10, f, ":")
-    
-    af = f[afi] + 0 # Cast AF to a number
-    dp = f[dpi] + 0 # Cast DP to a number
-    
-    if($7 == "PASS" && af >= 0.5 && dp >= 10 && $2 > 200 && $2 < 16578) {
-        print
-    }
-}
-' | bgzip -c > "$FINAL_VCF"
+    af = f[afi] + 0; dp = f[dpi] + 0
+    if($7 == "PASS" && af >= 0.5 && dp >= 10) print
+}' | bgzip -c > "$FINAL_VCF"
 
 bcftools index -c "$FINAL_VCF"
 
