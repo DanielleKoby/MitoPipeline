@@ -17,6 +17,7 @@
 #   docker run --rm \
 #     -v /home/ec2-user/studies:/studies \
 #     -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main:/pipeline \
+#     -v /home/ec2-user/output:/output \
 #
 # ============================================================================
 
@@ -30,6 +31,7 @@ set -e
 # In Docker, use fixed mount points
 PROJECT_ROOT="/pipeline"
 EXTERNAL_DATA_ROOT="/studies"
+OUTPUT_ROOT="/output"
 
 # Tool paths (Docker conda environment)
 GATK_PATH="/opt/conda/bin/gatk"
@@ -65,7 +67,7 @@ REF_FASTA="${EXTERNAL_DATA_ROOT}/MitoPipeline/ncbi_dataset/ncbi_dataset/data/GCF
 # ============================================================================
 
 # Data root directory
-DATA_ROOT="${PROJECT_ROOT}/data"
+DATA_ROOT="${OUTPUT_ROOT}/data"
 
 # Create data directories if they don't exist
 mkdir -p "$DATA_ROOT"
