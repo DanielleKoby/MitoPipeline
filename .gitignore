@@ -11,4 +11,4 @@ plots/
 tools/
 __pycache__/
 .nfs*/
-.md
+*.md
