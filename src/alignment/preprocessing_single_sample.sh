@@ -30,20 +30,8 @@ DUPS_REMOVED="${PROJECT_ROOT}/data/processed/alignment/deduplicated"
 METRICS_DIR="${PROJECT_ROOT}/data/qc/dedup_metrics" 
 LOGS="${PROJECT_ROOT}/data/processed/analysis/logs"
 LOG_FILE="${LOGS}/${RUN_ID}_log.txt"
-# Folders and files preperations
 
-mkdir -p "$MAPPING_DIR"
-mkdir -p "$RG_DIR"
-mkdir -p "$SORTED_DIR"
-mkdir -p "$DUPS_REMOVED"
-mkdir -p "$METRICS_DIR"
-mkdir -p "$LOGS"
-mkdir -p "$TMP_DIR"
-
-
-if [ ! -f "${LOGS}/${RUN_ID}_log.txt" ]; then
-    touch "${LOGS}/${RUN_ID}_log.txt"
-fi
+mkdir -p "$MAPPING_DIR" "$RG_DIR" "$SORTED_DIR" "$DUPS_REMOVED" "$METRICS_DIR" "$LOGS" "$TMP_DIR"
 
 # Tool paths already loaded from tool_paths.config
 export PATH="${JAVA_HOME}/bin:${PATH}"
@@ -62,8 +50,6 @@ if [ -f "$REV_FILE" ] && [ -f "$FWD_FILE" ]; then
     "$REF_FILE" "$FWD_FILE" "$REV_FILE" \
     | samtools view -bS - > "$FILE"
     echo "--- step 1- DONE!: ${RUN_ID} ---" >> $LOG_FILE
- 
-    conda deactivate
 
 else
     echo "--- ${RUN_ID} ERROR step 1 ---" >> $LOG_FILE
@@ -71,7 +57,6 @@ else
 fi
 
 # Step 1.1- adding RG data
-conda activate alisa
 BAM_WO_RG="$FILE"
 FILE="${RG_DIR}/${RUN_ID}.bam"
 
