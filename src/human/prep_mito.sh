@@ -128,7 +128,7 @@ if [ -f "$INPUT_BAM" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] STEP A: Extracting MT reads" >> "$LOG_FILE"
     
     # Extract only MT chromosome, retaining header
-    samtools view -b -h MT "$INPUT_BAM" > "$EXTRACTED_FILE"
+    samtools view -b -h "$INPUT_BAM" MT > "$EXTRACTED_FILE"
     
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] STEP A: Complete" >> "$LOG_FILE"
 else
