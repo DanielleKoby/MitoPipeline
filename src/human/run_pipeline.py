@@ -1,204 +1,175 @@
 #!/usr/bin/env python3
 
 # ============================================================================
-# DOCKER SETUP NOTES
+# HUMAN MITOCHONDRIAL PIPELINE - Python Wrapper
 # ============================================================================
-# This script is designed to run inside a Docker container.
+# Runs bioinformatics processing for mitochondrial data.
 #
-# REQUIREMENTS:
-#   - Docker image must contain: Python 3.6+, gatk, samtools, bcftools, Java 17+
-#   - Tools expected at: /opt/conda/bin/
-#
-# MOUNT POINTS (required):
-#   /pipeline     <- Project directory (MitoPipeline-main)
-#   /studies      <- External data (studies/human_genetics_bulk/reads/bam, studies/MitoPipeline)
-#
-# EXAMPLE DOCKER RUN:
+# DOCKER EXAMPLE:
 #   docker run --rm \
 #     -v /home/ec2-user/studies:/studies \
-#     -v /path/to/MitoPipeline-main:/pipeline \
+#     -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main:/pipeline \
+#     -v /home/ec2-user/output:/output \
 #     -w /pipeline \
-#     mito-image python src/human/run_pipeline.py --step prep
-#
-# For single sample:
-#   docker run --rm \
-#     -v /home/ec2-user/studies:/studies \
-#     -v /path/to/MitoPipeline-main:/pipeline \
-#     -w /pipeline \
-#     mito-image python src/human/run_pipeline.py --step prep --sample-id 00114249-518b
+#     mito_pipeline_env:v1 python src/human/run_pipeline.py --step both --sample-id 00114249-518b
 #
 # ============================================================================
 
-import os
 import subprocess
 from pathlib import Path
 import argparse
 import sys
+import logging
+from datetime import datetime
 
 
 def main():
+    # Setup logging to file
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent.parent
+    logs_dir = project_root / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = logs_dir / f"pipeline_{timestamp}.log"
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Pipeline started. Log file: {log_file}")
+    
     parser = argparse.ArgumentParser(
-        description="Human Mitochondrial Pipeline Wrapper for preprocessing and variant calling"
+        description="Run mitochondrial pipeline: prep, vcf, or both",
+        epilog="""
+EXAMPLES:
+  # Run prep step for single sample
+  python run_pipeline.py --step prep --sample-id 00114249-518b
+  
+  # Run vcf step for all samples in input directory
+  python run_pipeline.py --step vcf
+  
+  # Run both steps sequentially for single sample
+  python run_pipeline.py --step both --sample-id 00114249-518b
+  
+  # Use custom input directory
+  python run_pipeline.py --step prep --input-dir /path/to/bam/files
+  
+  # Docker example (all mounts required)
+  docker run --rm \\
+    -v /home/ec2-user/studies:/studies \\
+    -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main:/pipeline \\
+    -v /home/ec2-user/output:/output \\
+    -w /pipeline \\
+    mito_pipeline_env:v1 python src/human/run_pipeline.py --step both
+
+OUTPUT:
+  - Log files created in: logs/pipeline_YYYYMMDD_HHMMSS.log
+  - Both console and file output enabled
+  - Exit code 0 = success, non-zero = error
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     parser.add_argument(
         "--step",
         required=True,
-        choices=["prep", "vcf"],
-        help="Pipeline step to execute: 'prep' for preprocessing or 'vcf' for variant calling"
+        choices=["prep", "vcf", "both"],
+        help="""
+Pipeline step(s) to execute:
+  prep  - Preprocessing: Extract MT reads, add read groups, sort, mark duplicates, index
+  vcf   - Variant calling: Filter variants, apply AF/DP thresholds, create consensus
+  both  - Run prep then vcf sequentially
+        """
     )
     
     parser.add_argument(
         "--sample-id",
         default=None,
-        help="Process a single sample by ID (e.g., '00114249-518b'). If not provided, processes all samples in the directory."
-    )
-    
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print commands without executing them"
+        help="""
+Process single sample by ID (e.g. '00114249-518b').
+If not provided, processes ALL samples found in input directory.
+        """
     )
     
     parser.add_argument(
         "--input-dir",
         default=None,
-        help="Custom input directory. Defaults to appropriate folder based on --step"
+        help="""
+Custom input directory. If not provided, uses defaults:
+  prep: /studies/human_genetics_bulk/reads/bam/
+  vcf:  /output/data/human/processed/alignment/deduplicated/ (or local project/data/)
+        """
     )
     
     args = parser.parse_args()
     
-    # Get project root
-    script_dir = Path(__file__).parent
-    project_root = script_dir.parent.parent
-    
-    # Define bash script paths
+    # Get script paths (already defined in logging setup above)
     prep_script = script_dir / "prep_mito.sh"
     vcf_script = script_dir / "call_mito_variants.sh"
     
-    # Check that bash scripts exist
-    if not prep_script.exists():
-        print(f"ERROR: Preprocessing script not found: {prep_script}", file=sys.stderr)
-        sys.exit(1)
-    if not vcf_script.exists():
-        print(f"ERROR: Variant calling script not found: {vcf_script}", file=sys.stderr)
-        sys.exit(1)
+    # Determine which steps to run
+    steps = []
+    if args.step in ["prep", "both"]:
+        steps.append(("prep", prep_script))
+    if args.step in ["vcf", "both"]:
+        steps.append(("vcf", vcf_script))
     
-    # Determine input directory and script based on step
-    if args.step == "prep":
+    # Process each step
+    for step_name, bash_script in steps:
+        logger.info(f"\n{'='*70}")
+        logger.info(f"RUNNING: {step_name.upper()}")
+        logger.info(f"{'='*70}")
+        
+        # Get input directory
         if args.input_dir:
             input_dir = Path(args.input_dir)
         else:
-            input_dir = project_root / "data" / "human" / "raw" / "bam"
+            if step_name == "prep":
+                input_dir = Path("/studies/human_genetics_bulk/reads/bam")
+            else:  # vcf
+                if Path("/output").exists():
+                    input_dir = Path("/output/data/human/processed/alignment/deduplicated")
+                else:
+                    input_dir = project_root / "data" / "human" / "processed" / "alignment" / "deduplicated"
         
-        bash_script = prep_script
-        pattern = "gencove__*.bam"
+        # Get file pattern
+        pattern = "gencove__*.bam" if step_name == "prep" else "*.bam"
         
-        # Extract sample ID from gencove__<ID>.bam format
-        def extract_sample_id(filepath):
-            filename = filepath.name
-            # Remove "gencove__" prefix and ".bam" suffix
-            sample_id = filename.replace("gencove__", "").replace(".bam", "")
-            return sample_id
-        
-    elif args.step == "vcf":
-        if args.input_dir:
-            input_dir = Path(args.input_dir)
+        # Determine samples
+        if args.sample_id:
+            samples = [args.sample_id]
         else:
-            input_dir = project_root / "data" / "human" / "processed" / "alignment" / "deduplicated"
+            if input_dir.exists():
+                input_files = list(input_dir.glob(pattern))
+                if not input_files:
+                    logger.warning(f"No files matching '{pattern}' in {input_dir}")
+                    continue
+                # Extract sample IDs
+                samples = []
+                for f in input_files:
+                    if step_name == "prep":
+                        sample_id = f.name.replace("gencove__", "").replace(".bam", "")
+                    else:
+                        sample_id = f.name.replace(".bam", "")
+                    samples.append(sample_id)
+            else:
+                logger.error(f"Input directory not found: {input_dir}")
+                sys.exit(1)
         
-        bash_script = vcf_script
-        pattern = "*.bam"
+        # Run for each sample
+        for sample_id in sorted(samples):
+            logger.info(f"Processing: {sample_id}")
+            cmd = ["bash", str(bash_script), sample_id]
+            subprocess.run(cmd, check=True)
+            logger.info(f"✓ Done: {sample_id}")
         
-        # Extract sample ID from <ID>.bam format
-        def extract_sample_id(filepath):
-            filename = filepath.name
-            sample_id = filename.replace(".bam", "")
-            return sample_id
-    
-    # Check that input directory exists
-    if not input_dir.exists():
-        print(f"ERROR: Input directory not found: {input_dir}", file=sys.stderr)
-        sys.exit(1)
-    
-    # Find all input files
-    if args.sample_id:
-        # Single sample mode
-        if args.step == "prep":
-            input_file = input_dir / f"gencove__{args.sample_id}.bam"
-        else:
-            input_file = input_dir / f"{args.sample_id}.bam"
-        
-        if not input_file.exists():
-            print(f"ERROR: Input file not found: {input_file}", file=sys.stderr)
-            sys.exit(1)
-        
-        samples = [args.sample_id]
-    else:
-        # Find all matching files
-        input_files = list(input_dir.glob(pattern))
-        
-        if not input_files:
-            print(f"WARNING: No files matching '{pattern}' found in {input_dir}", file=sys.stderr)
-            sys.exit(0)
-        
-        samples = [extract_sample_id(f) for f in input_files]
-    
-    print(f"Running {args.step} step on {len(samples)} sample(s)...")
-    print(f"Input directory: {input_dir}")
-    print(f"Bash script: {bash_script}")
-    
-    completed = []
-    failed = []
-    skipped = []
-    
-    for sample_id in sorted(samples):
-        print(f"\n{'='*70}")
-        print(f"Processing sample: {sample_id}")
-        print(f"{'='*70}")
-        
-        # Build command
-        cmd = ["bash", str(bash_script), sample_id]
-        
-        if args.dry_run:
-            print(f"[DRY RUN] Would execute: {' '.join(cmd)}")
-            completed.append(sample_id)
-        else:
-            try:
-                result = subprocess.run(cmd, check=True)
-                completed.append(sample_id)
-                print(f"✓ Successfully processed {sample_id}")
-            except subprocess.CalledProcessError as e:
-                failed.append(sample_id)
-                print(f"✗ FAILED for {sample_id}: {e}", file=sys.stderr)
-            except Exception as e:
-                failed.append(sample_id)
-                print(f"✗ ERROR for {sample_id}: {e}", file=sys.stderr)
-    
-    # Print summary
-    print(f"\n{'='*70}")
-    print("SUMMARY")
-    print(f"{'='*70}")
-    print(f"Completed: {len(completed)}/{len(samples)}")
-    if completed:
-        for sample_id in completed:
-            print(f"  ✓ {sample_id}")
-    
-    if failed:
-        print(f"\nFailed: {len(failed)}/{len(samples)}")
-        for sample_id in failed:
-            print(f"  ✗ {sample_id}")
-    
-    if skipped:
-        print(f"\nSkipped: {len(skipped)}/{len(samples)}")
-        for sample_id in skipped:
-            print(f"  - {sample_id}")
-    
-    # Exit with error if any failures
-    if failed:
-        sys.exit(1)
-    else:
-        sys.exit(0)
+        logger.info(f"\n✓ {step_name.upper()} complete. Processed {len(samples)} sample(s)")
 
 
 if __name__ == "__main__":
