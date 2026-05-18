@@ -14,11 +14,11 @@
 #   /studies      <- External data (studies/human_genetics_bulk/reads/bam, studies/MitoPipeline)
 #
 # EXAMPLE DOCKER RUN:
-#   docker run --rm \
-#     -v /home/ec2-user/studies:/studies \
-#     -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main:/pipeline \
-#     -v /home/ec2-user/output:/output \
-#
+    # docker run --rm \
+    # -v /home/ec2-user/studies:/studies \
+    # -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main3:/pipeline \
+    # -w /pipeline \
+    # mito_pipeline_env:v1 bash src/human/prep_mito.sh 00114249-518b
 # ============================================================================
 
 # Exit immediately if a command exits with a non-zero status.
@@ -31,7 +31,6 @@ set -e
 # In Docker, use fixed mount points
 PROJECT_ROOT="/pipeline"
 EXTERNAL_DATA_ROOT="/studies"
-OUTPUT_ROOT="/output"
 
 # Tool paths (Docker conda environment)
 GATK_PATH="/opt/conda/bin/gatk"
@@ -49,7 +48,7 @@ if ! command -v samtools &> /dev/null; then
 fi
 
 SAMPLE_ID=$1
-NUM_OF_THREADS=40
+NUM_OF_THREADS=2
 
 # ============================================================================
 # PATHS - Input (read-only, external data mounted at /studies)
@@ -66,8 +65,8 @@ REF_FASTA="${EXTERNAL_DATA_ROOT}/MitoPipeline/ncbi_dataset/ncbi_dataset/data/GCF
 # PATHS - Output (created in MitoPipeline-main/data)
 # ============================================================================
 
-# Data root directory
-DATA_ROOT="${OUTPUT_ROOT}/data"
+# Data root directory (created inside MitoPipeline folder)
+DATA_ROOT="${PROJECT_ROOT}/data"
 
 # Create data directories if they don't exist
 mkdir -p "$DATA_ROOT"
@@ -211,19 +210,5 @@ else
     exit 1
 fi
 
-# ============================================================================
-# STEP D - Index BAM file for downstream processing (Mutect2 compatibility)
-# ============================================================================
-
-if [ -f "$DEDUP_OUTPUT" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] STEP D: Indexing BAM" >> "$LOG_FILE"
-    
-    gatk BuildBamIndex -I "$DEDUP_OUTPUT"
-    
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] STEP D: Complete" >> "$LOG_FILE"
-else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR STEP D: Deduplicated BAM not found: ${DEDUP_OUTPUT}" >> "$LOG_FILE"
-    exit 1
-fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] SAMPLE COMPLETE: ${SAMPLE_ID}" >> "$LOG_FILE"
