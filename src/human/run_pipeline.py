@@ -3,23 +3,29 @@
 # ============================================================================
 # HUMAN MITOCHONDRIAL PIPELINE - Python Wrapper
 # ============================================================================
-# Runs bioinformatics processing for mitochondrial data.
+# EXECUTION MODEL: This script runs INSIDE the Docker container
 #
-# DOCKER SETUP:
-# The pipeline automatically handles Docker image management:
-#   1. Checks if image (mito_pipeline_env:latest) already exists
-#   2. If not found, looks for tar file: mito_pipeline_env_latest.tar
-#   3. If tar exists, loads it (no need to build)
-#   4. If no tar, builds from Dockerfile automatically
-#   5. Runs all processing inside Docker container
+# The host spins up Docker ONCE with proper mounts and overlay paths.
+# This script then handles all sample iteration internally via direct
+# subprocess calls (no Docker wrapping).
 #
-# Docker mounts:
-#   /pipeline  → project root (e.g., MitoPipeline-main3/)
-#   /studies   → parent studies folder
+# DOCKER IMAGE LOADING:
+# The Docker image (mito_pipeline_env:v1) must be pre-loaded on the host.
+# To load the image from a tar file:
+#   docker load -i /home/ec2-user/studies/MitoPipeline/mito_pipeline_env_v1.tar
 #
-# Examples - all work automatically with no Docker commands needed:
-#   python src/human/run_pipeline.py --step prep --main-folder MitoPipeline-main --sample-id 00114249-518b
-#   python src/human/run_pipeline.py --step both --main-folder MitoPipeline-main3 --sample-id 00114249-518b
+# RESUMABLE EXECUTION:
+# If the server crashes during processing, the pipeline will skip samples
+# that have already been completed. Check /pipeline/data/human/processed/alignment/deduplicated/
+# for existing output BAM files. The pipeline automatically detects and skips them.
+#
+# HOST COMMAND (example - replace paths as needed):
+# docker run --rm \
+#   -v /home/ec2-user/studies:/studies \
+#   -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main10:/pipeline \
+#   -v /home/ec2-user/pipeline_logs:/pipeline/data/human/qc/logs \
+#   -w /pipeline \
+#   mito_pipeline_env:v1 python src/human/run_pipeline.py --step prep
 #
 # ============================================================================
 
@@ -29,86 +35,6 @@ import argparse
 import sys
 import logging
 from datetime import datetime
-import shutil
-
-
-def check_docker_installed(logger):
-    """Check if Docker is installed and running."""
-    try:
-        result = subprocess.run(["docker", "--version"], capture_output=True, text=True)
-        logger.info(f"✓ Docker found: {result.stdout.strip()}")
-        return True
-    except FileNotFoundError:
-        logger.error("✗ Docker is not installed or not in PATH")
-        return False
-
-
-def build_docker_image(dockerfile_path, image_name, image_tag, logger):
-    """Build Docker image from Dockerfile."""
-    if not dockerfile_path.exists():
-        logger.error(f"Dockerfile not found at: {dockerfile_path}")
-        return False
-    
-    logger.info(f"Building Docker image: {image_name}:{image_tag}")
-    logger.info(f"Using Dockerfile: {dockerfile_path}")
-    
-    try:
-        cmd = [
-            "docker", "build",
-            "-t", f"{image_name}:{image_tag}",
-            "-f", str(dockerfile_path),
-            str(dockerfile_path.parent)
-        ]
-        logger.info(f"Command: {' '.join(cmd)}")
-        
-        result = subprocess.run(cmd, check=True)
-        logger.info(f"✓ Docker image built successfully: {image_name}:{image_tag}")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"✗ Failed to build Docker image: {e}")
-        return False
-
-
-def load_docker_image_from_tar(tar_path, logger):
-    """Load Docker image from tar file."""
-    if not Path(tar_path).exists():
-        logger.error(f"Docker tar file not found: {tar_path}")
-        return False
-    
-    logger.info(f"Loading Docker image from tar: {tar_path}")
-    
-    try:
-        with open(tar_path, 'rb') as f:
-            result = subprocess.run(
-                ["docker", "load"],
-                stdin=f,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        logger.info(f"✓ Docker image loaded: {result.stdout.strip()}")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"✗ Failed to load Docker image: {e.stderr}")
-        return False
-
-
-def image_exists(image_name, image_tag, logger):
-    """Check if Docker image already exists locally."""
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", f"{image_name}:{image_tag}"],
-            capture_output=True,
-            check=False
-        )
-        exists = result.returncode == 0
-        if exists:
-            logger.info(f"✓ Docker image already exists: {image_name}:{image_tag}")
-        return exists
-    except Exception as e:
-        logger.warning(f"Could not check if image exists: {e}")
-        return False
-
 
 def main():
     # Setup logging to file
@@ -130,37 +56,57 @@ def main():
     )
     logger = logging.getLogger(__name__)
     logger.info(f"Pipeline started. Log file: {log_file}")
+    logger.info(f"Execution context: Inside Docker container (single lifecycle)")
     
     parser = argparse.ArgumentParser(
-        description="Run mitochondrial pipeline: prep, vcf, or both",
+        description="Run mitochondrial pipeline inside Docker container (prep, vcf, or both)",
         epilog="""
-EXAMPLES:
-  # Run prep step for single sample (auto Docker setup)
-  python run_pipeline.py --step prep --sample-id 00114249-518b
+EXECUTION CONTEXT:
+This script is designed to run INSIDE the Docker container.
+The host invokes it with a single 'docker run' command that includes:
+  - Overlay logs mount: /home/ec2-user/pipeline_logs:/pipeline/data/human/qc/logs
+  - This overlay enables append operations (>>) on local EBS storage
+
+DOCKER IMAGE SETUP:
+Before running the docker run command, load the image from the tar file:
+  docker load -i /home/ec2-user/studies/MitoPipeline/mito_pipeline_env_v1.tar
   
-  # Run vcf step for all samples in input directory (auto Docker setup)
-  python run_pipeline.py --step vcf
+The image will be loaded as: mito_pipeline_env:v1
+Verify with: docker images | grep mito
+
+HOST COMMAND EXAMPLE:
+  docker run --rm \
+    -v /home/ec2-user/studies:/studies \
+    -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main10:/pipeline \
+    -v /home/ec2-user/pipeline_logs:/pipeline/data/human/qc/logs \
+    -w /pipeline \
+    mito_pipeline_env:v1 python src/human/run_pipeline.py --step prep
+
+USAGE INSIDE CONTAINER:
+  # Process all samples (default)
+  python src/human/run_pipeline.py --step prep
   
-  # Run both steps sequentially for single sample (auto Docker setup)
-  python run_pipeline.py --step both --sample-id 00114249-518b
+  # Process single sample
+  python src/human/run_pipeline.py --step prep --sample-id 00114249-518b
   
-  # Use custom input directory
-  python run_pipeline.py --step prep --input-dir /path/to/bam/files
+  # Run both steps for all samples
+  python src/human/run_pipeline.py --step both
   
-  # Use custom Docker image name/tag
-  python run_pipeline.py --step both --sample-id 00114249-518b --docker-image my_image --docker-tag v2
+  # Custom input directory
+  python src/human/run_pipeline.py --step prep --input-dir /path/to/bam
 
 OUTPUT:
-  - Log files created in: logs/pipeline_YYYYMMDD_HHMMSS.log
-  - Both console and file output enabled
+  - Pipeline logs: logs/pipeline_YYYYMMDD_HHMMSS.log
+  - Processing logs: /pipeline/data/human/qc/logs/ (overlay mounted to local EBS)
+  - Processed samples: /pipeline/data/human/processed/
   - Exit code 0 = success, non-zero = error
-  
-AUTOMATIC DOCKER SETUP:
-  - Checks Docker installation
-  - Checks if Docker image exists locally
-  - If image not found, automatically builds it from Dockerfile
-  - If image found, loads and uses it
-  - All processes run inside Docker container
+
+RESUMABLE EXECUTION:
+  If the server crashes during prep processing, re-run the same command.
+  The pipeline automatically detects already-processed samples and skips them.
+  Look for completed output BAM files at:
+    /pipeline/data/human/processed/alignment/deduplicated/{sample_id}.bam
+  Already-processed samples will show as "SKIPPED" in the logs.
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -171,93 +117,36 @@ AUTOMATIC DOCKER SETUP:
         choices=["prep", "vcf", "both"],
         help="""
 Pipeline step(s) to execute:
-  prep  - Preprocessing: Extract MT reads, add read groups, sort, mark duplicates, index
-  vcf   - Variant calling: Filter variants, apply AF/DP thresholds, create consensus
+  prep  - Preprocessing: Extract MT reads, add read groups, sort, mark duplicates
+  vcf   - Variant calling: Filter variants, apply thresholds, create consensus
   both  - Run prep then vcf sequentially
         """
     )
     
-    
     parser.add_argument(
         "--sample-id",
         default=None,
-        help="""
-Process single sample by ID (e.g. '00114249-518b').
-If not provided, processes ALL samples found in input directory.
-        """
+        help="Process single sample by ID (e.g. '00114249-518b'). If not provided, processes ALL samples."
     )
     
     parser.add_argument(
         "--input-dir",
         default=None,
         help="""
-Custom input directory. If not provided, uses defaults:
+Custom input directory. Defaults:
   prep: /studies/human_genetics_bulk/reads/bam/
   vcf:  /pipeline/data/human/processed/alignment/deduplicated/
         """
     )
     
-    parser.add_argument(
-        "--docker-image",
-        default="mito_pipeline_env",
-        help="Docker image name (default: mito_pipeline_env)"
-    )
-    
-    parser.add_argument(
-        "--docker-tag",
-        default="v1",
-        help="Docker image tag (default: v1)"
-    )
-    
     args = parser.parse_args()
     
-    # Get script paths (already defined in logging setup above)
+    # Get script paths
     prep_script = script_dir / "prep_mito.sh"
     vcf_script = script_dir / "call_mito_variants.sh"
     
     logger.info(f"Project root: {project_root}")
-    
-    # ========================================================================
-    # AUTOMATIC DOCKER SETUP (always run)
-    # ========================================================================
-    logger.info(f"\n{'='*70}")
-    logger.info("DOCKER SETUP (AUTOMATIC)")
-    logger.info(f"{'='*70}")
-    
-    # Check if Docker is available
-    if not check_docker_installed(logger):
-        logger.error("Docker is required but not available. Exiting.")
-        sys.exit(1)
-    
-    # Check if image exists
-    image_name = args.docker_image
-    image_tag = args.docker_tag
-    logger.info(f"Checking for Docker image: {image_name}:{image_tag}")
-    
-    if not image_exists(image_name, image_tag, logger):
-        logger.info(f"Image not found. Attempting to load from tar file or build...")
-        
-        # Try loading from tar file first (check in MitoPipeline parent folder)
-        tar_file = project_root.parent / f"{image_name}_{image_tag}.tar"
-        if tar_file.exists():
-            logger.info(f"Found tar file: {tar_file}")
-            if load_docker_image_from_tar(tar_file, logger):
-                logger.info(f"✓ Successfully loaded image from tar")
-            else:
-                logger.warning(f"Failed to load tar file, will attempt to build...")
-                dockerfile = project_root / "Dockerfile"
-                if not build_docker_image(dockerfile, image_name, image_tag, logger):
-                    logger.error("Failed to build Docker image. Exiting.")
-                    sys.exit(1)
-        else:
-            # No tar file, try building from Dockerfile
-            logger.info(f"No tar file found. Building from Dockerfile...")
-            dockerfile = project_root / "Dockerfile"
-            if not build_docker_image(dockerfile, image_name, image_tag, logger):
-                logger.error("Failed to build Docker image. Exiting.")
-                sys.exit(1)
-    
-    logger.info(f"✓ Docker image ready: {image_name}:{image_tag}")
+    logger.info(f"Processing mode: {'Single sample (' + args.sample_id + ')' if args.sample_id else 'All samples'}")
     
     # ========================================================================
     # DETERMINE WHICH STEPS TO RUN
@@ -274,28 +163,32 @@ Custom input directory. If not provided, uses defaults:
         logger.info(f"RUNNING: {step_name.upper()}")
         logger.info(f"{'='*70}")
         
-        # Get input directory
+        # Get input directory (uses Docker mount points)
         if args.input_dir:
             input_dir = Path(args.input_dir)
         else:
             if step_name == "prep":
+                # Inside Docker: /studies maps to host's /home/ec2-user/studies
                 input_dir = Path("/studies/human_genetics_bulk/reads/bam")
             else:  # vcf
+                # /pipeline maps to host's MitoPipeline-main10/
                 input_dir = project_root / "data" / "human" / "processed" / "alignment" / "deduplicated"
         
         # Get file pattern
         pattern = "gencove__*.bam" if step_name == "prep" else "*.bam"
         
-        # Determine samples
+        # Determine which samples to process
         if args.sample_id:
+            # Single sample mode
             samples = [args.sample_id]
         else:
+            # Process all samples
             if input_dir.exists():
                 input_files = list(input_dir.glob(pattern))
                 if not input_files:
                     logger.warning(f"No files matching '{pattern}' in {input_dir}")
                     continue
-                # Extract sample IDs
+                # Extract sample IDs from filenames
                 samples = []
                 for f in input_files:
                     if step_name == "prep":
@@ -307,25 +200,46 @@ Custom input directory. If not provided, uses defaults:
                 logger.error(f"Input directory not found: {input_dir}")
                 sys.exit(1)
         
-        # Run for each sample
-        for sample_id in sorted(samples):
-            logger.info(f"Processing: {sample_id}")
-            
-            # Always run inside Docker container
-            studies_root = project_root.parent.parent  # Go up 2 levels from project to studies/
-            cmd = [
-                "docker", "run", "--rm",
-                "-v", f"{project_root}:/pipeline",
-                "-v", f"{studies_root}:/studies",
-                "-w", "/pipeline",
-                f"{image_name}:{image_tag}",
-                "bash", str(bash_script), sample_id
-            ]
-            
-            subprocess.run(cmd, check=True)
-            logger.info(f"✓ Done: {sample_id}")
+        # ====================================================================
+        # EXECUTE BASH SCRIPTS FOR EACH SAMPLE
+        # (Direct subprocess calls - no Docker wrapping since we're in-container)
+        # ====================================================================
+        logger.info(f"Found {len(samples)} sample(s) to process")
         
-        logger.info(f"\n✓ {step_name.upper()} complete. Processed {len(samples)} sample(s)")
+        skipped_count = 0
+        processed_count = 0
+        
+        for idx, sample_id in enumerate(sorted(samples), 1):
+            # For prep step: check if output already exists (resumability after crashes)
+            if step_name == "prep":
+                output_bam = project_root / "data" / "human" / "processed" / "alignment" / "deduplicated" / f"{sample_id}.bam"
+                if output_bam.exists():
+                    logger.info(f"[{idx}/{len(samples)}] SKIPPED: {sample_id} (already processed)")
+                    skipped_count += 1
+                    continue
+            
+            logger.info(f"[{idx}/{len(samples)}] Processing: {sample_id}")
+            
+            # Execute bash script directly via subprocess
+            # We're already inside the container, so no docker wrapping needed
+            cmd = ["bash", str(bash_script), sample_id]
+            
+            try:
+                subprocess.run(cmd, check=True)
+                logger.info(f"  ✓ Completed: {sample_id}")
+                processed_count += 1
+            except subprocess.CalledProcessError as e:
+                logger.error(f"  ✗ Failed: {sample_id} (exit code: {e.returncode})")
+                sys.exit(1)
+        
+        summary = f"Processed {processed_count} sample(s)"
+        if skipped_count > 0:
+            summary += f", Skipped {skipped_count} (already completed)"
+        logger.info(f"\n✓ {step_name.upper()} complete. {summary}")
+    
+    logger.info("\n" + "="*70)
+    logger.info("✓ PIPELINE EXECUTION COMPLETE")
+    logger.info("="*70)
 
 
 if __name__ == "__main__":

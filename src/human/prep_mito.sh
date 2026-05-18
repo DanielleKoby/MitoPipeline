@@ -89,14 +89,16 @@ mkdir -p "$MITO_EXTRACTED_DIR" "$RG_DIR" "$SORTED_DIR" "$DUPS_REMOVED" "$METRICS
 # ============================================================================
 
 if [ ! -f "$CONFIG_LOG" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === PIPELINE CONFIGURATION ===" > "$CONFIG_LOG"
-    echo "Project Root: $PROJECT_ROOT" >> "$CONFIG_LOG"
-    echo "External Data Root: $EXTERNAL_DATA_ROOT" >> "$CONFIG_LOG"
-    echo "GATK Path: $GATK_PATH" >> "$CONFIG_LOG"
-    echo "Java Home: $JAVA_HOME" >> "$CONFIG_LOG"
-    echo "Reference FASTA: $REF_FASTA" >> "$CONFIG_LOG"
-    echo "Input BAM Directory: ${RAW_BAM_DIR}" >> "$CONFIG_LOG"
-    echo "============================================" >> "$CONFIG_LOG"
+    {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === PIPELINE CONFIGURATION ===" 
+        echo "Project Root: $PROJECT_ROOT" 
+        echo "External Data Root: $EXTERNAL_DATA_ROOT" 
+        echo "GATK Path: $GATK_PATH" 
+        echo "Java Home: $JAVA_HOME" 
+        echo "Reference FASTA: $REF_FASTA" 
+        echo "Input BAM Directory: ${RAW_BAM_DIR}" 
+        echo "============================================" 
+    } >> "$CONFIG_LOG"
 fi
 
 # ============================================================================
