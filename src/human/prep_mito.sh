@@ -85,6 +85,34 @@ CONFIG_LOG="${LOGS}/pipeline_config.log"
 mkdir -p "$MITO_EXTRACTED_DIR" "$RG_DIR" "$SORTED_DIR" "$DUPS_REMOVED" "$METRICS_DIR" "$LOGS" "$TMP_DIR"
 
 # ============================================================================
+# AUTO-CLEANUP - Remove partial files from interrupted runs
+# ============================================================================
+
+cleanup_partial_files() {
+    local search_dirs=("$TMP_DIR" "$MITO_EXTRACTED_DIR" "$RG_DIR" "$SORTED_DIR" "$DUPS_REMOVED" "$METRICS_DIR")
+    local removed_any=0
+
+    for dir in "${search_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            local removed_in_dir
+            removed_in_dir=$(find "$dir" -type f -name "${SAMPLE_ID}*" \
+                \( -name "*.parts" -o -name "*.tmp.*" -o -name "*.sort.tmp*" -o -name "*~" \) \
+                -print -delete 2>/dev/null || true)
+
+            if [ -n "$removed_in_dir" ]; then
+                removed_any=1
+                {
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CLEANUP: Removed partial files in $dir"
+                    echo "$removed_in_dir"
+                } >> "$LOG_FILE"
+            fi
+        fi
+    done
+
+
+}
+
+# ============================================================================
 # CONFIGURATION LOG - Write once on first sample
 # ============================================================================
 
@@ -118,6 +146,11 @@ fi
 # Log sample start
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] SAMPLE START: $SAMPLE_ID" >> "$LOG_FILE"
 echo "Input BAM: $INPUT_BAM" >> "$LOG_FILE"
+
+# Clean up only when wrapper detected interrupted-run artifacts.
+if [ "${PIPELINE_ENABLE_PARTIAL_CLEANUP:-0}" = "1" ]; then
+    cleanup_partial_files
+fi
 
 # ============================================================================
 # STEP A - Extract mitochondrial reads (MT chromosome only)

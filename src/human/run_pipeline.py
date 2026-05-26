@@ -19,6 +19,13 @@
 # that have already been completed. Check /pipeline/data/human/processed/alignment/deduplicated/
 # for existing output BAM files. The pipeline automatically detects and skips them.
 #
+# If a sample was interrupted mid-processing, partial files (.parts, .tmp) will be
+# automatically detected and cleaned up on re-run before re-processing.
+#
+# GRACEFUL TERMINATION:
+# Press Ctrl+C at any time to pause processing. Already-processed samples are safe.
+# Re-run the same command to resume from where you left off.
+#
 # HOST COMMAND (example - replace paths as needed):
 # docker run --rm \
 #   -v /home/ec2-user/studies:/studies \
@@ -35,6 +42,52 @@ import argparse
 import sys
 import logging
 from datetime import datetime
+import signal
+import shutil
+import os
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully."""
+    print("\n\n" + "="*70)
+    print("⚠️  PIPELINE INTERRUPTED BY USER")
+    print("="*70)
+    print("Gracefully shutting down...")
+    print("Run the same command again to resume processing.")
+    print("Already-completed samples will be skipped automatically.")
+    sys.exit(0)
+
+# Register signal handler for Ctrl+C
+signal.signal(signal.SIGINT, signal_handler)
+
+
+def has_partial_artifacts(step_name, project_root):
+    """Check once per step whether interrupted-run temporary artifacts exist."""
+    if step_name == "prep":
+        search_dirs = [
+            project_root / "data" / "human" / "processed" / "temp",
+            project_root / "data" / "human" / "processed" / "alignment" / "mito_extracted",
+            project_root / "data" / "human" / "processed" / "alignment" / "read_groups",
+            project_root / "data" / "human" / "processed" / "alignment" / "sorted",
+            project_root / "data" / "human" / "processed" / "alignment" / "deduplicated",
+            project_root / "data" / "human" / "qc" / "dedup_metrics",
+        ]
+    else:
+        search_dirs = [
+            project_root / "data" / "human" / "processed" / "variants" / "raw",
+            project_root / "data" / "human" / "processed" / "variants" / "v_01" / "filtered",
+            project_root / "data" / "human" / "processed" / "variants" / "v_01" / "final",
+            project_root / "data" / "human" / "processed" / "consensus" / "v_01" / "fasta",
+        ]
+
+    partial_patterns = ["*.parts", "*.tmp.*", "*.sort.tmp*", "*~"]
+
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for pattern in partial_patterns:
+            if any(directory.glob(pattern)):
+                return True
+    return False
 
 def main():
     # Setup logging to file
@@ -80,7 +133,7 @@ HOST COMMAND EXAMPLE:
     -v /home/ec2-user/studies/MitoPipeline/MitoPipeline-main10:/pipeline \
     -v /home/ec2-user/pipeline_logs:/pipeline/data/human/qc/logs \
     -w /pipeline \
-    mito_pipeline_env:v1 python src/human/run_pipeline.py --step prep
+    mito_pipeline_env:v1 python src/human/run_pipeline.py --step vcf
 
 USAGE INSIDE CONTAINER:
   # Process all samples (default)
@@ -107,6 +160,16 @@ RESUMABLE EXECUTION:
   Look for completed output BAM files at:
     /pipeline/data/human/processed/alignment/deduplicated/{sample_id}.bam
   Already-processed samples will show as "SKIPPED" in the logs.
+
+PARTIAL FILE CLEANUP:
+  If a sample is interrupted mid-processing, partial files (.parts, .tmp) may be left behind.
+  On re-run, the pipeline automatically detects and cleans up these partial files before
+  re-processing the sample. No manual cleanup is needed.
+
+GRACEFUL TERMINATION:
+  Press Ctrl+C at any time to pause the pipeline. The container will shut down gracefully.
+  Run the same command again to resume from where you left off.
+  Already-processed samples will be skipped automatically.
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -205,6 +268,13 @@ Custom input directory. Defaults:
         # (Direct subprocess calls - no Docker wrapping since we're in-container)
         # ====================================================================
         logger.info(f"Found {len(samples)} sample(s) to process")
+
+        # Check once before step execution whether cleanup is needed.
+        enable_partial_cleanup = has_partial_artifacts(step_name, project_root)
+        logger.info(
+            "Partial-file cleanup: %s",
+            "ENABLED (partial artifacts detected)" if enable_partial_cleanup else "DISABLED (no artifacts detected)",
+        )
         
         skipped_count = 0
         processed_count = 0
@@ -223,9 +293,11 @@ Custom input directory. Defaults:
             # Execute bash script directly via subprocess
             # We're already inside the container, so no docker wrapping needed
             cmd = ["bash", str(bash_script), sample_id]
+            env = os.environ.copy()
+            env["PIPELINE_ENABLE_PARTIAL_CLEANUP"] = "1" if enable_partial_cleanup else "0"
             
             try:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, env=env)
                 logger.info(f"  ✓ Completed: {sample_id}")
                 processed_count += 1
             except subprocess.CalledProcessError as e:
